@@ -33,6 +33,11 @@ type Config struct {
 	Loop    LoopConfig                  `json:"loop"`
 	Storage StorageConfig               `json:"storage"`
 	Log     LogConfig                   `json:"log"`
+	Tools   ToolsConfig                 `json:"tools"`
+
+	// LlamaServer é o binário usado para subir os modelos. Vazio = procura no
+	// PATH e em ~/llama.cpp/build*/bin.
+	LlamaServer string `json:"llama_server,omitempty"`
 
 	// Source é o arquivo de config usado; vazio quando só valem os padrões.
 	Source string `json:"-"`
@@ -47,16 +52,31 @@ type ServerConfig struct {
 
 // ModelConfig descreve o llama-server de um papel.
 type ModelConfig struct {
-	URL         string `json:"url"`                   // base do llama-server, ex.: http://127.0.0.1:8081
-	Model       string `json:"model"`                 // nome informativo, aparece em logs e métricas
-	GGUFSHA256  string `json:"gguf_sha256,omitempty"` // checksum do GGUF, conferido na Fase 1
-	ContextSize int    `json:"context_size"`
+	URL         string   `json:"url"`                   // base do llama-server, ex.: http://127.0.0.1:8081
+	Model       string   `json:"model"`                 // nome informativo, aparece em logs e métricas
+	GGUF        string   `json:"gguf,omitempty"`        // arquivo do modelo; com ele o Nexus sobe o servidor sozinho
+	GGUFSHA256  string   `json:"gguf_sha256,omitempty"` // checksum do GGUF, conferido antes de subir
+	ContextSize int      `json:"context_size"`
+	Args        []string `json:"args,omitempty"` // argumentos extras do llama-server
 }
+
+// ToolsConfig controla as ferramentas.
+type ToolsConfig struct {
+	// Workdir é a pasta que as ferramentas de arquivo enxergam. Vazio = a
+	// pasta de onde o nexus foi chamado.
+	Workdir string   `json:"workdir,omitempty"`
+	Allow   []string `json:"allow"` // allowlist
+}
+
+// DefaultTools são as ferramentas liberadas por padrão.
+var DefaultTools = []string{"read_file", "list_dir", "memory_search", "memory_save"}
 
 // LoopConfig limita o loop ReAct.
 type LoopConfig struct {
 	MaxSteps       int      `json:"max_steps"`
 	RequestTimeout Duration `json:"request_timeout"`
+	MaxTokens      int      `json:"max_tokens"`  // tokens por geração
+	Temperature    float64  `json:"temperature"` // 0 = determinístico
 }
 
 // StorageConfig aponta o arquivo SQLite.
@@ -101,7 +121,8 @@ func Default() Config {
 			domain.RoleAux:   {URL: "http://127.0.0.1:8082", Model: "aux-3b-q4", ContextSize: 4096},
 			domain.RoleEmbed: {URL: "http://127.0.0.1:8083", Model: "nomic-embed-text", ContextSize: 2048},
 		},
-		Loop:    LoopConfig{MaxSteps: 6, RequestTimeout: Duration{2 * time.Minute}},
+		Loop:    LoopConfig{MaxSteps: 6, RequestTimeout: Duration{3 * time.Minute}, MaxTokens: 1024, Temperature: 0.3},
+		Tools:   ToolsConfig{Allow: append([]string(nil), DefaultTools...)},
 		Storage: StorageConfig{}, // vazio = ~/.local/share/nexus/nexus.db, resolvido em Load
 		Log:     LogConfig{Level: "info", Format: "json"},
 	}
@@ -158,6 +179,40 @@ func Load(path string, env func(string) (string, bool)) (Config, error) {
 // DefaultConfigPath é onde o Nexus procura a config; vazio se não há HOME.
 func DefaultConfigPath(env func(string) (string, bool)) string {
 	return xdgPath(env, "XDG_CONFIG_HOME", ".config", "config.json")
+}
+
+// SaveModel grava no arquivo de config o modelo de um papel e, se dado, o
+// binário do llama-server. O resto do arquivo é preservado.
+func SaveModel(path string, role domain.Role, m ModelConfig, llamaServer string) error {
+	doc := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return fmt.Errorf("config %s: %w", path, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	models, _ := doc["models"].(map[string]any)
+	if models == nil {
+		models = map[string]any{}
+	}
+	models[string(role)] = m
+	doc["models"] = models
+	if llamaServer != "" {
+		doc["llama_server"] = llamaServer
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // DefaultDataPath é onde fica o SQLite por padrão; "nexus.db" no diretório
@@ -297,6 +352,21 @@ func (c Config) Validate() error {
 	}
 	if c.Loop.RequestTimeout.Duration <= 0 {
 		add("loop.request_timeout: deve ser maior que zero")
+	}
+	if c.Loop.MaxTokens < 16 || c.Loop.MaxTokens > 32768 {
+		add("loop.max_tokens: %d fora de 16..32768", c.Loop.MaxTokens)
+	}
+	if c.Loop.Temperature < 0 || c.Loop.Temperature > 2 {
+		add("loop.temperature: %v fora de 0..2", c.Loop.Temperature)
+	}
+	known := map[string]bool{}
+	for _, t := range DefaultTools {
+		known[t] = true
+	}
+	for _, t := range c.Tools.Allow {
+		if !known[t] {
+			add("tools.allow: ferramenta desconhecida %q", t)
+		}
 	}
 	if strings.TrimSpace(c.Storage.Path) == "" {
 		add("storage.path: obrigatório")

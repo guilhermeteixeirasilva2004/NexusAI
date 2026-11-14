@@ -3,3 +3,4 @@ bin/
 *.db-*
 nexus.json
 .tools/
+.cover.out

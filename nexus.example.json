@@ -9,7 +9,12 @@
   },
   "loop": {
     "max_steps": 6,
-    "request_timeout": "2m"
+    "request_timeout": "3m",
+    "max_tokens": 1024,
+    "temperature": 0.3
+  },
+  "tools": {
+    "allow": ["read_file", "list_dir", "memory_search", "memory_save"]
   },
   "log": {
     "level": "info",

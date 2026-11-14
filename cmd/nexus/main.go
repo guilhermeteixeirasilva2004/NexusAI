@@ -3,36 +3,62 @@
 //
 // Uso do dia a dia, sem flags:
 //
-//	nexus                  abre a conversa (Fase 1; hoje mostra o status)
-//	nexus "pergunta"       resposta única (Fase 1)
+//	nexus                  conversar
+//	nexus "pergunta"       resposta única
 //	nexus status           diz se está tudo certo, em português simples
 //
 // As flags (-config, -check-config, -version) são para diagnóstico.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 
 	"nexusai/internal/config"
-	"nexusai/internal/core/domain"
 )
 
 // version é preenchida no build: -ldflags "-X main.version=..."
 var version = "dev"
 
-func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.LookupEnv))
+// terminal descreve a entrada e a saída do processo.
+type terminal struct {
+	in     io.Reader
+	out    io.Writer
+	err    io.Writer
+	inTTY  bool // dá para perguntar coisas à pessoa
+	color  bool // cores e indicador "pensando…"
+	interr <-chan os.Signal
 }
 
-func run(args []string, stdout, stderr io.Writer, env func(string) (string, bool)) int {
+func main() {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	term := terminal{
+		in: os.Stdin, out: os.Stdout, err: os.Stderr,
+		inTTY:  isTTY(os.Stdin),
+		color:  isTTY(os.Stdout) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb",
+		interr: sigs,
+	}
+	os.Exit(run(context.Background(), os.Args[1:], term, os.LookupEnv))
+}
+
+func isTTY(f *os.File) bool {
+	st, err := f.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
+
+func run(ctx context.Context, args []string, term terminal, env func(string) (string, bool)) int {
 	fs := flag.NewFlagSet("nexus", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(term.err)
 	fs.Usage = func() {
-		fmt.Fprint(stderr, `Uso:
+		fmt.Fprint(term.err, `Uso:
   nexus                 conversar com o Nexus
   nexus "pergunta"      fazer uma pergunta rápida
   nexus status          ver se está tudo funcionando
@@ -48,20 +74,20 @@ Opções de diagnóstico:
 		return 2
 	}
 	if *showVersion {
-		fmt.Fprintln(stdout, version)
+		fmt.Fprintln(term.out, version)
 		return 0
 	}
 
 	cfg, err := config.Load(*cfgPath, env)
 	if err != nil {
-		fmt.Fprintln(stderr, "nexus:", err)
+		fmt.Fprintln(term.err, "nexus:", err)
 		return 1
 	}
 	if *check {
-		enc := json.NewEncoder(stdout)
+		enc := json.NewEncoder(term.out)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(cfg); err != nil {
-			fmt.Fprintln(stderr, "nexus:", err)
+			fmt.Fprintln(term.err, "nexus:", err)
 			return 1
 		}
 		return 0
@@ -69,46 +95,21 @@ Opções de diagnóstico:
 
 	logOut, err := cfg.Log.Open()
 	if err != nil {
-		fmt.Fprintln(stderr, "nexus: não consegui abrir o arquivo de log:", err)
+		fmt.Fprintln(term.err, "nexus: não consegui abrir o arquivo de log:", err)
 		return 1
 	}
 	defer logOut.Close()
 	log, err := cfg.Log.NewLogger(logOut)
 	if err != nil {
-		fmt.Fprintln(stderr, "nexus:", err)
+		fmt.Fprintln(term.err, "nexus:", err)
 		return 1
 	}
-	attrs := []any{"version", version, "config", cfg.Source, "listen", cfg.Server.Listen, "storage", cfg.Storage.Path, "max_steps", cfg.Loop.MaxSteps}
-	for _, r := range domain.Roles() {
-		m := cfg.Models[r]
-		attrs = append(attrs, "model_"+string(r), m.Model+" @ "+m.URL)
-	}
-	log.Info("config carregada", attrs...)
+	log = log.With("version", version)
 
-	switch {
-	case fs.NArg() == 0 || (fs.NArg() == 1 && fs.Arg(0) == "status"):
-		printStatus(stdout, cfg)
-		if fs.NArg() == 0 {
-			fmt.Fprintln(stdout, "\nA conversa chega na Fase 1. Por enquanto o Nexus só confere a configuração.")
-		}
+	if fs.NArg() == 1 && fs.Arg(0) == "status" {
+		printStatus(ctx, term.out, cfg, env)
 		return 0
-	default:
-		fmt.Fprintln(stderr, "nexus: perguntas diretas (nexus \"...\") chegam na Fase 1.")
-		return 2
 	}
-}
-
-func printStatus(w io.Writer, cfg config.Config) {
-	source := "padrões (nenhum arquivo de config encontrado)"
-	if cfg.Source != "" {
-		source = cfg.Source
-	}
-	fmt.Fprintln(w, "Nexus", version, "· configuração ok")
-	fmt.Fprintln(w, "  config:      ", source)
-	for _, r := range domain.Roles() {
-		m := cfg.Models[r]
-		fmt.Fprintf(w, "  modelo %-6s %s em %s\n", string(r)+":", m.Model, m.URL)
-	}
-	fmt.Fprintln(w, "  memória:     ", cfg.Storage.Path)
-	fmt.Fprintln(w, "  logs:        ", cfg.Log.File)
+	question := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	return converse(ctx, cfg, log, term, env, question)
 }

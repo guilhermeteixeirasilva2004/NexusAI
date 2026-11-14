@@ -269,3 +269,61 @@ func TestLogOpen(t *testing.T) {
 		t.Fatalf("stderr: %v", err)
 	}
 }
+
+func TestPhase1Validation(t *testing.T) {
+	for file, want := range map[string]string{
+		`{"loop": {"max_tokens": 4}}`:       "max_tokens",
+		`{"loop": {"temperature": 3}}`:      "temperature",
+		`{"tools": {"allow": ["shell"]}}`:   "desconhecida",
+		`{"models": {"main": {"gguf": 1}}}`: "cannot unmarshal",
+		`{"llama_server": ["x"]}`:           "cannot unmarshal",
+	} {
+		if _, err := Load(writeFile(t, file), noEnv); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: quer %q, veio %v", file, want, err)
+		}
+	}
+	cfg, err := Load(writeFile(t, `{"tools": {"allow": ["read_file"]}, "llama_server": "/opt/llama-server"}`), noEnv)
+	if err != nil || len(cfg.Tools.Allow) != 1 || cfg.LlamaServer != "/opt/llama-server" {
+		t.Errorf("cfg = %+v, %v", cfg.Tools, err)
+	}
+	if d := Default(); len(d.Tools.Allow) != 4 || d.Loop.MaxTokens != 1024 {
+		t.Errorf("padrões = %+v %+v", d.Tools, d.Loop)
+	}
+}
+
+func TestSaveModel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nexus", "config.json")
+	m := ModelConfig{URL: "http://127.0.0.1:8081", Model: "qwen-7b", GGUF: "/m/qwen.gguf", ContextSize: 8192}
+	if err := SaveModel(path, domain.RoleMain, m, "/bin/llama-server"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Models[domain.RoleMain].GGUF != "/m/qwen.gguf" || cfg.LlamaServer != "/bin/llama-server" || cfg.Models[domain.RoleAux].URL == "" {
+		t.Errorf("cfg = %+v", cfg)
+	}
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+		t.Errorf("permissão = %v", st.Mode().Perm())
+	}
+
+	// O resto do arquivo é preservado.
+	if err := os.WriteFile(path, []byte(`{"loop": {"max_steps": 4}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveModel(path, domain.RoleMain, m, ""); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path, noEnv)
+	if err != nil || cfg.Loop.MaxSteps != 4 || cfg.LlamaServer != "" {
+		t.Errorf("preservar: %+v, %v", cfg.Loop, err)
+	}
+	if err := os.WriteFile(path, []byte(`{quebrado`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveModel(path, domain.RoleMain, m, ""); err == nil {
+		t.Error("arquivo quebrado não deveria ser sobrescrito")
+	}
+}
