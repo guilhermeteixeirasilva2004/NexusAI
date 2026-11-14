@@ -1,0 +1,42 @@
+version: "2"
+
+run:
+  timeout: 2m
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - ineffassign
+    - depguard
+  exclusions:
+    # Ignora erros de Close em leitura e de fmt.Fprint* em stderr (padrão do v1).
+    presets:
+      - std-error-handling
+  settings:
+    depguard:
+      rules:
+        # Regra 1 do doc: o core importa só a stdlib e o próprio core.
+        # As regras 2 e 3 (adapters entre si, quem conhece adapters) ficam em
+        # internal/archlint, que roda no go test.
+        core:
+          list-mode: strict
+          files:
+            - "**/internal/core/**"
+          allow:
+            - $gostd
+            - nexusai/internal/core
+          deny:
+            - pkg: nexusai/internal/adapters
+              desc: o core não importa adapters; declare uma porta em core/ports
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

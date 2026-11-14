@@ -1,0 +1,18 @@
+{
+  "server": {
+    "listen": ["127.0.0.1:8080"]
+  },
+  "models": {
+    "main":  { "url": "http://127.0.0.1:8081", "model": "main-7b-q4",       "context_size": 8192 },
+    "aux":   { "url": "http://127.0.0.1:8082", "model": "aux-3b-q4",        "context_size": 4096 },
+    "embed": { "url": "http://127.0.0.1:8083", "model": "nomic-embed-text", "context_size": 2048 }
+  },
+  "loop": {
+    "max_steps": 6,
+    "request_timeout": "2m"
+  },
+  "log": {
+    "level": "info",
+    "format": "json"
+  }
+}
