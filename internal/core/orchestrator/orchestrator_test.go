@@ -529,3 +529,20 @@ func TestDuplicateCallNotRepeated(t *testing.T) {
 		t.Error("callKey com JSON inválido")
 	}
 }
+
+func TestGrammarOnlyWhenSupported(t *testing.T) {
+	e := newEnv(t, "oi", "oi")
+	if _, err := e.ask("oi"); err != nil {
+		t.Fatal(err)
+	}
+	if e.model.Requests[0].Grammar != "" {
+		t.Error("sem suporte, sem gramática")
+	}
+	e.model.Grammar = true
+	if _, err := e.ask("oi"); err != nil {
+		t.Fatal(err)
+	}
+	if e.model.Requests[1].Grammar != cognition.NoCJKGrammar {
+		t.Errorf("gramática = %q", e.model.Requests[1].Grammar)
+	}
+}

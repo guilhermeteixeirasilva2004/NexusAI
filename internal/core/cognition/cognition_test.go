@@ -358,3 +358,27 @@ func TestSystemPrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestDisplayPathAndHonesty(t *testing.T) {
+	cases := map[[2]string]string{
+		{"/home/anatosh/NexusAI", "/home/anatosh"}: "~/NexusAI",
+		{"/home/anatosh", "/home/anatosh"}:         "~",
+		{"/srv/dados", "/home/anatosh"}:            "/srv/dados",
+		{"/home/anatosh2/x", "/home/anatosh"}:      "/home/anatosh2/x",
+		{"/tmp/x", ""}:                             "/tmp/x",
+	}
+	for in, want := range cases {
+		if got := DisplayPath(in[0], in[1]); got != want {
+			t.Errorf("DisplayPath(%q, %q) = %q, quer %q", in[0], in[1], got, want)
+		}
+	}
+	p := SystemPrompt("~/NexusAI", time.Now())
+	for _, want := range []string{"Nunca deduza nome", "diga que não sabe", "O nome da pessoa é Ana", "~/NexusAI"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt sem %q", want)
+		}
+	}
+	if !strings.HasPrefix(NoCJKGrammar, "root ::= [^") {
+		t.Error("gramática")
+	}
+}

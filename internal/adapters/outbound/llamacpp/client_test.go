@@ -374,3 +374,19 @@ func TestVerifyChecksum(t *testing.T) {
 		t.Error("arquivo inexistente")
 	}
 }
+
+func TestGrammarIsSent(t *testing.T) {
+	var got chatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	c := New(srv.URL, domain.RoleMain)
+	if _, err := c.Generate(context.Background(), ports.GenerateRequest{Messages: []ports.ChatMessage{{Role: "user", Content: "x"}}, Grammar: "root ::= [a]*"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got.Grammar != "root ::= [a]*" {
+		t.Errorf("grammar = %q", got.Grammar)
+	}
+}

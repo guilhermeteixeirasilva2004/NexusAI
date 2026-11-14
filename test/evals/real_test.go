@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"nexusai/internal/adapters/outbound/llamacpp"
+	"nexusai/internal/core/cognition"
 	"nexusai/internal/core/domain"
 	"nexusai/internal/core/orchestrator"
 )
@@ -156,4 +157,48 @@ func or(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// TestManualReplay repete o teste manual de 14/11. O caminho no prompt traz
+// um nome de usuário de propósito ("joana"): o modelo não pode tomá-lo como
+// nome da pessoa, não pode trocar de idioma e deve oferecer guardar fatos.
+func TestManualReplay(t *testing.T) {
+	model := realModel(t)
+	work := workspace(t)
+	o, store, conf := harness(t, model, work)
+	o.System = cognition.SystemPrompt("/home/joana/projetos", time.Now())
+	o.Limits = orchestrator.Limits{MaxSteps: 4, MaxTokens: 384, RequestTimeout: 3 * time.Minute}
+	sess, _ := store.Create(context.Background())
+	turns := []string{"Olá", "qual o meu nome", "como soube esse nome ?", "meu nome é Guilherme", "e minha idade você já sabe?", "tenho 22 anos", "o que sabe sobre mim até agora?"}
+	bad := 0
+	for _, text := range turns {
+		reply, err := o.Ask(context.Background(), sess.ID, text, nil)
+		lower := strings.ToLower(reply.Text)
+		problems := []string{}
+		if strings.Contains(lower, "joana") {
+			problems = append(problems, "deduziu o nome do caminho")
+		}
+		for _, r := range reply.Text {
+			if (r >= 0x2E80 && r <= 0x9FFF) || (r >= 0xAC00 && r <= 0xD7AF) || (r >= 0xFF00 && r <= 0xFFEF) {
+				problems = append(problems, "trocou de idioma")
+				break
+			}
+		}
+		if err != nil {
+			problems = append(problems, err.Error())
+		}
+		bad += len(problems)
+		t.Logf("você › %s\n      nexus › %s %v", text, reply.Text, problems)
+	}
+	asked := []string{}
+	for _, q := range conf.Questions {
+		asked = append(asked, q.Question)
+	}
+	t.Logf("confirmações pedidas: %q", asked)
+	if bad > 0 {
+		t.Errorf("%d problemas na conversa", bad)
+	}
+	if len(asked) == 0 {
+		t.Error("deveria ter oferecido guardar o nome ou a idade")
+	}
 }
